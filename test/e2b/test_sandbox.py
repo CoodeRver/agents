@@ -1,7 +1,9 @@
 import time
 import uuid
+from datetime import datetime
 
 import pytest
+from dateutil.tz import tzutc
 from e2b.exceptions import NotFoundException
 from e2b_code_interpreter import Sandbox, SandboxQuery, SandboxState
 
@@ -205,12 +207,12 @@ def test_resume_state(sandbox_context):
 
 
 def test_is_running(sandbox_context):
-    sbx: Sandbox = Sandbox.create(
+    sbx: Sandbox = sandbox_context.add(Sandbox.create(
         template="code-interpreter",
         headers={
             "x-request-id": sandbox_context.request_id
         }
-    )
+    ))
     assert sbx.is_running()  # Returns True
 
     sbx.kill()
@@ -232,3 +234,36 @@ def test_inplace_update(sandbox_context):
     ))
     file = sbx.files.read("/root/test-file")
     assert file == "xxxx"
+
+zero_time = datetime(1, 1, 1, 0, 0, tzinfo=tzutc())
+
+def test_never_timeout(sandbox_context):
+    sbx: Sandbox = sandbox_context.add(Sandbox.create(
+        template="code-interpreter",
+        timeout=60,
+        headers={
+            "x-request-id": sandbox_context.request_id
+        },
+        metadata={
+            "e2b.agents.kruise.io/never-timeout": "true"
+        }
+    ))
+    assert sbx.is_running()  # Returns True
+    info = sbx.get_info()
+    assert info.end_at == zero_time
+
+    sbx.set_timeout(60)
+    info = sbx.get_info()
+    assert info.end_at == zero_time
+
+    sbx.beta_pause()
+    info = sbx.get_info()
+    assert info.end_at == zero_time
+    assert sbx.is_running() is False
+
+    sbx.connect(timeout=60)
+    info = sbx.get_info()
+    assert info.end_at == zero_time
+    # TODO: There's a issue with is_running after connect that the request will timeout
+    # assert sbx.is_running() is True
+    assert info.state == "running"

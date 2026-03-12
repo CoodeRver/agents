@@ -10,6 +10,7 @@ import (
 	agentsv1alpha1 "github.com/openkruise/agents/api/v1alpha1"
 	"github.com/openkruise/agents/pkg/servers/e2b/keys"
 	"github.com/openkruise/agents/pkg/servers/e2b/models"
+	"github.com/openkruise/agents/pkg/utils"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -64,15 +65,6 @@ func TestPauseSandbox(t *testing.T) {
 }
 
 func TestConnectSandbox(t *testing.T) {
-	templateName := "test-template"
-	controller, client, teardown := Setup(t)
-	defer teardown()
-	user := &models.CreatedTeamAPIKey{
-		ID:   keys.AdminKeyID,
-		Key:  InitKey,
-		Name: "admin",
-	}
-
 	tests := []struct {
 		name         string
 		paused       bool   // if sandbox is set paused
@@ -117,6 +109,15 @@ func TestConnectSandbox(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
+			templateName := "test-template"
+			controller, client, teardown := Setup(t)
+			defer teardown()
+			user := &models.CreatedTeamAPIKey{
+				ID:   keys.AdminKeyID,
+				Key:  InitKey,
+				Name: "admin",
+			}
+
 			cleanup := CreateSandboxPool(t, controller, templateName, 1)
 			defer cleanup()
 
@@ -284,7 +285,7 @@ func TestResumeSandbox(t *testing.T) {
 				}
 				sbx := GetSandbox(t, createResp.Body.SandboxID, client.SandboxClient)
 				sbx.Status.Phase = agentsv1alpha1.SandboxPaused
-				sbx.Status.Conditions = append(sbx.Status.Conditions, metav1.Condition{
+				utils.SetSandboxCondition(&sbx.Status, metav1.Condition{
 					Type:   string(agentsv1alpha1.SandboxConditionPaused),
 					Status: status,
 				})
@@ -316,7 +317,7 @@ func TestResumeSandbox(t *testing.T) {
 			}, user))
 
 			if tt.expectStatus >= 300 {
-				assert.NotNil(t, err)
+				assert.NotNil(t, err, err.Error())
 				if err != nil {
 					if err.Code == 0 {
 						err.Code = http.StatusInternalServerError
