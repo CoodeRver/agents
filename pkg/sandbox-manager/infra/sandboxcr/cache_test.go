@@ -21,6 +21,7 @@ import (
 	constantUtils "github.com/openkruise/agents/pkg/utils"
 	sandboxManagerUtils "github.com/openkruise/agents/pkg/utils/sandbox-manager"
 	utils "github.com/openkruise/agents/pkg/utils/sandbox-manager"
+	"github.com/openkruise/agents/pkg/utils/sandboxutils"
 )
 
 func TestCache_WaitForSandboxSatisfied(t *testing.T) {
@@ -183,6 +184,54 @@ func TestCache_WaitForSandboxSatisfied(t *testing.T) {
 			},
 			timeout:     1 * time.Second,
 			expectError: assert.AnError.Error(),
+		},
+		{
+			name: "fallback to apiserver when sandbox not in cache",
+			setupFunc: func(t *testing.T, cache *Cache, client clients.SandboxClient) *agentsv1alpha1.Sandbox {
+				// Create a sandbox with LabelSandboxIsClaimed = "false"
+				// This sandbox will NOT be indexed by IndexClaimedSandboxID
+				// so GetClaimedSandbox will fail and trigger apiserver fallback
+				sandbox := &agentsv1alpha1.Sandbox{
+					ObjectMeta: metav1.ObjectMeta{
+						Name:      "test-sandbox-not-claimed",
+						Namespace: "default",
+						Labels: map[string]string{
+							agentsv1alpha1.LabelSandboxIsClaimed: "false", // Not indexed
+						},
+					},
+					Status: agentsv1alpha1.SandboxStatus{
+						Phase: agentsv1alpha1.SandboxPending, // Start as Pending
+					},
+				}
+				CreateSandboxWithStatus(t, client, sandbox)
+				// Wait for informer to sync, but it won't be in claimed index
+				time.Sleep(50 * time.Millisecond)
+
+				// Update sandbox to Running in background after a short delay
+				go func() {
+					time.Sleep(100 * time.Millisecond)
+					gotSbx, err := client.ApiV1alpha1().Sandboxes(sandbox.Namespace).Get(t.Context(), sandbox.Name, metav1.GetOptions{})
+					require.NoError(t, err)
+					gotSbx.Status.Phase = agentsv1alpha1.SandboxRunning
+					gotSbx.Status.Conditions = []metav1.Condition{
+						{
+							Type:   string(agentsv1alpha1.SandboxConditionReady),
+							Status: metav1.ConditionTrue,
+						},
+					}
+					_, err = client.ApiV1alpha1().Sandboxes(sandbox.Namespace).UpdateStatus(context.Background(), gotSbx, metav1.UpdateOptions{})
+					assert.NoError(t, err)
+				}()
+
+				return sandbox
+			},
+			checkFunc: func(sbx *agentsv1alpha1.Sandbox) (bool, error) {
+				// Check if sandbox is running and ready
+				return sbx.Status.Phase == agentsv1alpha1.SandboxRunning &&
+					sandboxutils.IsSandboxReady(sbx), nil
+			},
+			timeout:     2 * time.Second,
+			expectError: "",
 		},
 	}
 

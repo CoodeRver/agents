@@ -245,9 +245,21 @@ func addWaiterHandler[T client.Object](c *Cache, informer cache.SharedIndexInfor
 
 func (c *Cache) WaitForSandboxSatisfied(ctx context.Context, sbx *agentsv1alpha1.Sandbox, action WaitAction,
 	satisfiedFunc checkFunc[*agentsv1alpha1.Sandbox], timeout time.Duration) error {
-	return waitForObjectSatisfied[*agentsv1alpha1.Sandbox](ctx, c, sbx, action, func(sbx *agentsv1alpha1.Sandbox) (*agentsv1alpha1.Sandbox, error) {
-		return c.GetClaimedSandbox(sandboxutils.GetSandboxID(sbx))
-	}, satisfiedFunc, timeout)
+
+	ns := sbx.Namespace
+	sandboxName := sbx.Name
+	sandboxID := sandboxutils.GetSandboxID(sbx)
+
+	return waitForObjectSatisfied[*agentsv1alpha1.Sandbox](ctx, c, sbx, action,
+		func(_ *agentsv1alpha1.Sandbox) (*agentsv1alpha1.Sandbox, error) {
+			got, err := c.GetClaimedSandbox(sandboxID)
+			if err == nil {
+				return got, nil
+			}
+
+			return c.client.SandboxClient.ApiV1alpha1().Sandboxes(ns).Get(ctx, sandboxName, metav1.GetOptions{})
+		},
+		satisfiedFunc, timeout)
 }
 
 func (c *Cache) refreshCheckpoint(cp *agentsv1alpha1.Checkpoint) (*agentsv1alpha1.Checkpoint, error) {
