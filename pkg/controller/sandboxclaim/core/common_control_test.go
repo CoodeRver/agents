@@ -803,6 +803,65 @@ func TestCommonControl_buildClaimOptions(t *testing.T) {
 			},
 		},
 		{
+			name: "claim with pauseTime",
+			claim: &agentsv1alpha1.SandboxClaim{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      "test-claim",
+					Namespace: "default",
+					UID:       "test-uid-pause",
+				},
+				Spec: agentsv1alpha1.SandboxClaimSpec{
+					TemplateName: "test-template",
+					PauseTime:    &shutdownTime,
+				},
+			},
+			sandboxSet: &agentsv1alpha1.SandboxSet{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      "test-template",
+					Namespace: "default",
+				},
+			},
+			expectError: false,
+			validate: func(t *testing.T, opts infra.ClaimSandboxOptions) {
+				if opts.User != "test-uid-pause" {
+					t.Errorf("User = %v, want %v", opts.User, "test-uid-pause")
+				}
+				if opts.Modifier == nil {
+					t.Error("Modifier should not be nil")
+				}
+			},
+		},
+		{
+			name: "claim with both shutdownTime and pauseTime",
+			claim: &agentsv1alpha1.SandboxClaim{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      "test-claim",
+					Namespace: "default",
+					UID:       "test-uid-both-times",
+				},
+				Spec: agentsv1alpha1.SandboxClaimSpec{
+					TemplateName: "test-template",
+					ShutdownTime: &shutdownTime,
+					PauseTime:    &shutdownTime,
+				},
+			},
+			sandboxSet: &agentsv1alpha1.SandboxSet{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      "test-template",
+					Namespace: "default",
+				},
+			},
+			expectError: false,
+			validate: func(t *testing.T, opts infra.ClaimSandboxOptions) {
+				if opts.User != "test-uid-both-times" {
+					t.Errorf("User = %v, want %v", opts.User, "test-uid-both-times")
+				}
+				if opts.Modifier == nil {
+					t.Error("Modifier should not be nil")
+				}
+			},
+		},
+		{
 			name: "claim with inplaceUpdate - image only",
 			claim: &agentsv1alpha1.SandboxClaim{
 				ObjectMeta: metav1.ObjectMeta{
@@ -1118,6 +1177,121 @@ func TestCommonControl_buildClaimOptions_Modifier(t *testing.T) {
 	if mockSandbox.Annotations["custom-annotation"] != "value2" {
 		t.Errorf("Expected custom-annotation = %v, got %v",
 			"value2", mockSandbox.Annotations["custom-annotation"])
+	}
+
+	// Verify shutdownTime was set correctly on the sandbox
+	if mockSandbox.Sandbox.Spec.ShutdownTime == nil {
+		t.Fatal("Expected ShutdownTime to be set on sandbox")
+	}
+	if !mockSandbox.Sandbox.Spec.ShutdownTime.Time.Equal(shutdownTime.Time) {
+		t.Errorf("Expected ShutdownTime = %v, got %v", shutdownTime.Time, mockSandbox.Sandbox.Spec.ShutdownTime.Time)
+	}
+}
+
+// TestCommonControl_buildClaimOptions_TimeoutModifier tests that shutdownTime and pauseTime
+// are correctly applied to the sandbox via the modifier.
+func TestCommonControl_buildClaimOptions_TimeoutModifier(t *testing.T) {
+	scheme := runtime.NewScheme()
+	_ = agentsv1alpha1.AddToScheme(scheme)
+
+	fakeClient := fake.NewClientBuilder().WithScheme(scheme).Build()
+	fakeRecorder := record.NewFakeRecorder(10)
+	control := NewCommonControl(fakeClient, fakeRecorder, nil, nil).(*commonControl)
+	ctx := context.Background()
+
+	now := metav1.Now()
+	pauseTime := metav1.NewTime(now.Add(10 * time.Minute))
+	shutdownTime := metav1.NewTime(now.Add(30 * time.Minute))
+
+	tests := []struct {
+		name             string
+		shutdownTime     *metav1.Time
+		pauseTime        *metav1.Time
+		wantShutdownTime *metav1.Time
+		wantPauseTime    *metav1.Time
+	}{
+		{
+			name:             "only shutdownTime",
+			shutdownTime:     &shutdownTime,
+			wantShutdownTime: &shutdownTime,
+			wantPauseTime:    nil,
+		},
+		{
+			name:          "only pauseTime",
+			pauseTime:     &pauseTime,
+			wantPauseTime: &pauseTime,
+			wantShutdownTime: nil,
+		},
+		{
+			name:             "both shutdownTime and pauseTime",
+			shutdownTime:     &shutdownTime,
+			pauseTime:        &pauseTime,
+			wantShutdownTime: &shutdownTime,
+			wantPauseTime:    &pauseTime,
+		},
+		{
+			name:             "neither shutdownTime nor pauseTime",
+			wantShutdownTime: nil,
+			wantPauseTime:    nil,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			claim := &agentsv1alpha1.SandboxClaim{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      "test-claim",
+					Namespace: "default",
+					UID:       "test-uid",
+				},
+				Spec: agentsv1alpha1.SandboxClaimSpec{
+					TemplateName: "test-template",
+					ShutdownTime: tt.shutdownTime,
+					PauseTime:    tt.pauseTime,
+				},
+			}
+			sandboxSet := &agentsv1alpha1.SandboxSet{
+				ObjectMeta: metav1.ObjectMeta{Name: "test-template", Namespace: "default"},
+			}
+
+			opts, err := control.buildClaimOptions(ctx, claim, sandboxSet)
+			if err != nil {
+				t.Fatalf("buildClaimOptions() error = %v", err)
+			}
+
+			mockSandbox := &sandboxcr.Sandbox{
+				Sandbox: &agentsv1alpha1.Sandbox{
+					ObjectMeta: metav1.ObjectMeta{Name: "test-sandbox", Namespace: "default"},
+				},
+			}
+			opts.Modifier(mockSandbox)
+
+			if tt.wantShutdownTime == nil {
+				if mockSandbox.Sandbox.Spec.ShutdownTime != nil {
+					t.Errorf("expected ShutdownTime to be nil, got %v", mockSandbox.Sandbox.Spec.ShutdownTime)
+				}
+			} else {
+				if mockSandbox.Sandbox.Spec.ShutdownTime == nil {
+					t.Fatal("expected ShutdownTime to be set, got nil")
+				}
+				if !mockSandbox.Sandbox.Spec.ShutdownTime.Time.Equal(tt.wantShutdownTime.Time) {
+					t.Errorf("ShutdownTime = %v, want %v", mockSandbox.Sandbox.Spec.ShutdownTime.Time, tt.wantShutdownTime.Time)
+				}
+			}
+
+			if tt.wantPauseTime == nil {
+				if mockSandbox.Sandbox.Spec.PauseTime != nil {
+					t.Errorf("expected PauseTime to be nil, got %v", mockSandbox.Sandbox.Spec.PauseTime)
+				}
+			} else {
+				if mockSandbox.Sandbox.Spec.PauseTime == nil {
+					t.Fatal("expected PauseTime to be set, got nil")
+				}
+				if !mockSandbox.Sandbox.Spec.PauseTime.Time.Equal(tt.wantPauseTime.Time) {
+					t.Errorf("PauseTime = %v, want %v", mockSandbox.Sandbox.Spec.PauseTime.Time, tt.wantPauseTime.Time)
+				}
+			}
+		})
 	}
 }
 

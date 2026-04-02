@@ -1597,4 +1597,169 @@ var _ = Describe("SandboxClaim", func() {
 			})
 		})
 	})
+
+	Context("Timeout fields propagation", func() {
+		var (
+			sandboxSet   *agentsv1alpha1.SandboxSet
+			sandboxClaim *agentsv1alpha1.SandboxClaim
+		)
+
+		BeforeEach(func() {
+			By("Creating a SandboxSet for timeout field tests")
+			sandboxSet = &agentsv1alpha1.SandboxSet{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      fmt.Sprintf("test-pool-%d", time.Now().UnixNano()),
+					Namespace: namespace,
+				},
+				Spec: agentsv1alpha1.SandboxSetSpec{
+					Replicas: 3,
+					EmbeddedSandboxTemplate: agentsv1alpha1.EmbeddedSandboxTemplate{
+						Template: &corev1.PodTemplateSpec{
+							Spec: corev1.PodSpec{
+								Containers: []corev1.Container{
+									{
+										Name:  "test-container",
+										Image: "nginx:stable-alpine3.23",
+									},
+								},
+							},
+						},
+					},
+				},
+			}
+			Expect(k8sClient.Create(ctx, sandboxSet)).To(Succeed())
+
+			By("Waiting for SandboxSet to be ready")
+			Eventually(func() int32 {
+				_ = k8sClient.Get(ctx, types.NamespacedName{
+					Name:      sandboxSet.Name,
+					Namespace: sandboxSet.Namespace,
+				}, sandboxSet)
+				return sandboxSet.Status.AvailableReplicas
+			}, time.Minute*2, time.Second).Should(BeNumerically(">=", int32(1)))
+		})
+
+		AfterEach(func() {
+			if sandboxClaim != nil {
+				_ = k8sClient.Delete(ctx, sandboxClaim)
+			}
+			if sandboxSet != nil {
+				_ = k8sClient.Delete(ctx, sandboxSet)
+			}
+		})
+
+		It("should propagate shutdownTime to the claimed sandbox", func() {
+			shutdownTime := metav1.NewTime(time.Now().Add(time.Hour))
+
+			By("Creating a SandboxClaim with ShutdownTime set")
+			sandboxClaim = &agentsv1alpha1.SandboxClaim{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      fmt.Sprintf("test-claim-shutdown-%d", time.Now().UnixNano()),
+					Namespace: namespace,
+				},
+				Spec: agentsv1alpha1.SandboxClaimSpec{
+					TemplateName: sandboxSet.Name,
+					Replicas:     ptr.To(int32(1)),
+					ShutdownTime: &shutdownTime,
+				},
+			}
+			Expect(k8sClient.Create(ctx, sandboxClaim)).To(Succeed())
+
+			By("Waiting for claim to complete")
+			Eventually(func() agentsv1alpha1.SandboxClaimPhase {
+				_ = k8sClient.Get(ctx, types.NamespacedName{
+					Name:      sandboxClaim.Name,
+					Namespace: sandboxClaim.Namespace,
+				}, sandboxClaim)
+				return sandboxClaim.Status.Phase
+			}, time.Minute, time.Second).Should(Equal(agentsv1alpha1.SandboxClaimPhaseCompleted))
+
+			By("Verifying the claimed sandbox has ShutdownTime set correctly")
+			claimedSandboxes, err := listClaimedSandboxes(ctx, sandboxClaim)
+			Expect(err).NotTo(HaveOccurred())
+			Expect(claimedSandboxes).To(HaveLen(1))
+
+			sandbox := claimedSandboxes[0]
+			Expect(sandbox.Spec.ShutdownTime).NotTo(BeNil(), "ShutdownTime should be set on the sandbox")
+			Expect(sandbox.Spec.ShutdownTime.Time).To(BeTemporally("~", shutdownTime.Time, time.Second))
+			Expect(sandbox.Spec.PauseTime).To(BeNil(), "PauseTime should not be set when only ShutdownTime is specified")
+		})
+
+		It("should propagate pauseTime to the claimed sandbox", func() {
+			pauseTime := metav1.NewTime(time.Now().Add(time.Hour))
+
+			By("Creating a SandboxClaim with PauseTime set")
+			sandboxClaim = &agentsv1alpha1.SandboxClaim{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      fmt.Sprintf("test-claim-pause-%d", time.Now().UnixNano()),
+					Namespace: namespace,
+				},
+				Spec: agentsv1alpha1.SandboxClaimSpec{
+					TemplateName: sandboxSet.Name,
+					Replicas:     ptr.To(int32(1)),
+					PauseTime:    &pauseTime,
+				},
+			}
+			Expect(k8sClient.Create(ctx, sandboxClaim)).To(Succeed())
+
+			By("Waiting for claim to complete")
+			Eventually(func() agentsv1alpha1.SandboxClaimPhase {
+				_ = k8sClient.Get(ctx, types.NamespacedName{
+					Name:      sandboxClaim.Name,
+					Namespace: sandboxClaim.Namespace,
+				}, sandboxClaim)
+				return sandboxClaim.Status.Phase
+			}, time.Minute, time.Second).Should(Equal(agentsv1alpha1.SandboxClaimPhaseCompleted))
+
+			By("Verifying the claimed sandbox has PauseTime set correctly")
+			claimedSandboxes, err := listClaimedSandboxes(ctx, sandboxClaim)
+			Expect(err).NotTo(HaveOccurred())
+			Expect(claimedSandboxes).To(HaveLen(1))
+
+			sandbox := claimedSandboxes[0]
+			Expect(sandbox.Spec.PauseTime).NotTo(BeNil(), "PauseTime should be set on the sandbox")
+			Expect(sandbox.Spec.PauseTime.Time).To(BeTemporally("~", pauseTime.Time, time.Second))
+			Expect(sandbox.Spec.ShutdownTime).To(BeNil(), "ShutdownTime should not be set when only PauseTime is specified")
+		})
+
+		It("should propagate both shutdownTime and pauseTime to the claimed sandbox", func() {
+			pauseTime := metav1.NewTime(time.Now().Add(30 * time.Minute))
+			shutdownTime := metav1.NewTime(time.Now().Add(time.Hour))
+
+			By("Creating a SandboxClaim with both ShutdownTime and PauseTime set")
+			sandboxClaim = &agentsv1alpha1.SandboxClaim{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      fmt.Sprintf("test-claim-both-times-%d", time.Now().UnixNano()),
+					Namespace: namespace,
+				},
+				Spec: agentsv1alpha1.SandboxClaimSpec{
+					TemplateName: sandboxSet.Name,
+					Replicas:     ptr.To(int32(1)),
+					ShutdownTime: &shutdownTime,
+					PauseTime:    &pauseTime,
+				},
+			}
+			Expect(k8sClient.Create(ctx, sandboxClaim)).To(Succeed())
+
+			By("Waiting for claim to complete")
+			Eventually(func() agentsv1alpha1.SandboxClaimPhase {
+				_ = k8sClient.Get(ctx, types.NamespacedName{
+					Name:      sandboxClaim.Name,
+					Namespace: sandboxClaim.Namespace,
+				}, sandboxClaim)
+				return sandboxClaim.Status.Phase
+			}, time.Minute, time.Second).Should(Equal(agentsv1alpha1.SandboxClaimPhaseCompleted))
+
+			By("Verifying the claimed sandbox has both ShutdownTime and PauseTime set correctly")
+			claimedSandboxes, err := listClaimedSandboxes(ctx, sandboxClaim)
+			Expect(err).NotTo(HaveOccurred())
+			Expect(claimedSandboxes).To(HaveLen(1))
+
+			sandbox := claimedSandboxes[0]
+			Expect(sandbox.Spec.ShutdownTime).NotTo(BeNil(), "ShutdownTime should be set on the sandbox")
+			Expect(sandbox.Spec.ShutdownTime.Time).To(BeTemporally("~", shutdownTime.Time, time.Second))
+			Expect(sandbox.Spec.PauseTime).NotTo(BeNil(), "PauseTime should be set on the sandbox")
+			Expect(sandbox.Spec.PauseTime.Time).To(BeTemporally("~", pauseTime.Time, time.Second))
+		})
+	})
 })
