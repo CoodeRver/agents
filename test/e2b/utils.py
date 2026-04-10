@@ -7,6 +7,11 @@ from typing import List, Optional
 import pytest
 from e2b.sandbox.sandbox_api import SandboxInfo, SandboxQuery
 from e2b_code_interpreter import Sandbox
+import os
+
+os.environ.setdefault("E2B_DOMAIN", "sae.sandbox.com")
+os.environ.setdefault("E2B_API_KEY", "admin-987654321")
+os.environ.setdefault("E2B_NAMESPACE", "sandbox")
 
 
 def connect_sandbox(sbx: Sandbox, timeout: Optional[int] = None) -> Sandbox | None:
@@ -81,12 +86,14 @@ def run_code_sandbox(sbx: Sandbox, code: str, **kwargs):
     return None
 
 
-def list_sandbox(query: SandboxQuery = None) -> List[SandboxInfo]:
+def list_sandbox(query: SandboxQuery = None, namespace: Optional[str] = None) -> List[SandboxInfo]:
     """List all sandboxes matching the given query with full pagination.
-    
+
     Args:
         query: SandboxQuery to filter sandboxes. If None, lists all sandboxes.
-        
+        namespace: If specified, only return sandboxes in this namespace.
+                   Sandbox IDs are in the format "namespace--name".
+
     Returns:
         List of all matching SandboxInfo objects.
     """
@@ -97,13 +104,29 @@ def list_sandbox(query: SandboxQuery = None) -> List[SandboxInfo]:
         items = paginator.next_items()
         sandboxes.extend(items)
 
+    if namespace:
+        sandboxes = [s for s in sandboxes if s.sandbox_id.startswith(f"{namespace}--")]
+
     return sandboxes
+
+
+def _kubectl_get_sbx(namespace: Optional[str] = None):
+    """Run kubectl get sbx -o json, optionally scoped to a namespace."""
+    cmd = ["kubectl", "get", "sbx", "-o", "json"]
+    if namespace:
+        cmd += ["-n", namespace]
+    return subprocess.run(cmd, capture_output=True, text=True, check=True)
 
 
 @pytest.fixture(autouse=True)
 def wait_for_sandbox():
     """BeforeEach: Wait up to 60 seconds until list_sandbox returns empty,
-    then check sandbox Ready condition via kubectl."""
+    then check sandbox Ready condition via kubectl.
+
+    Reads E2B_NAMESPACE env var to scope both list_sandbox and kubectl to a
+    specific namespace. If not set, operates across all namespaces.
+    """
+    namespace = os.environ.get("E2B_NAMESPACE")
     timeout = 30
     interval = 2
     start_time = time.time()
@@ -111,7 +134,7 @@ def wait_for_sandbox():
     # Wait for sandboxes cleanup
     while time.time() - start_time < timeout:
         try:
-            sandboxes = list_sandbox()
+            sandboxes = list_sandbox(namespace=namespace)
         except Exception as e:
             print(f"list_sandbox() failed: {e}")
             print("\n=== Sandbox Manager Logs ===")
@@ -125,19 +148,14 @@ def wait_for_sandbox():
 
     else:
         # Timeout reached, fail the test
-        remaining = list_sandbox()
+        remaining = list_sandbox(namespace=namespace)
         raise TimeoutError(f"{len(remaining)} sandbox(es) still running after {timeout}s timeout")
 
     # Wait for at least 2 Ready sandboxes
     ready_start_time = time.time()
     while time.time() - ready_start_time < timeout:
         try:
-            result = subprocess.run(
-                ["kubectl", "get", "sbx", "-o", "json"],
-                capture_output=True,
-                text=True,
-                check=True
-            )
+            result = _kubectl_get_sbx(namespace)
             sbx_list = json.loads(result.stdout)
 
             ready_count = 0
@@ -166,12 +184,7 @@ def wait_for_sandbox():
         # Timeout reached without enough Ready sandboxes
         # Get final state and describe not-ready sandboxes
         try:
-            result = subprocess.run(
-                ["kubectl", "get", "sbx", "-o", "json"],
-                capture_output=True,
-                text=True,
-                check=True
-            )
+            result = _kubectl_get_sbx(namespace)
             sbx_list = json.loads(result.stdout)
 
             ready_sandboxes = []
@@ -179,6 +192,7 @@ def wait_for_sandbox():
 
             for sbx in sbx_list.get("items", []):
                 sbx_name = sbx.get("metadata", {}).get("name", "unknown")
+                sbx_ns = sbx.get("metadata", {}).get("namespace", "")
                 conditions = sbx.get("status", {}).get("conditions", [])
                 is_ready = False
                 for cond in conditions:
@@ -196,11 +210,12 @@ def wait_for_sandbox():
             print(f"Ready sandboxes: {ready_sandboxes}")
             print(f"Not-ready sandboxes: {not_ready_sandboxes}\n")
 
+            ns_args = ["-n", namespace] if namespace else []
             for sbx_name in not_ready_sandboxes:
                 print(f"\n=== Describing not-ready sandbox: {sbx_name} ===")
-                kubectl("describe", "pod", sbx_name)
-                kubectl("logs", sbx_name, "-c", "runtime")
-                kubectl("logs", sbx_name, "-c", "sandbox")
+                kubectl("describe", "pod", sbx_name, *ns_args)
+                kubectl("logs", sbx_name, "-c", "runtime", *ns_args)
+                kubectl("logs", sbx_name, "-c", "sandbox", *ns_args)
 
             raise TimeoutError(
                 f"Timeout waiting for Ready sandboxes: found {len(ready_sandboxes)}/2 after {timeout}s. "

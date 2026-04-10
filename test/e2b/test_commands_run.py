@@ -1,6 +1,11 @@
 # test_commands_run.py
 from e2b.sandbox.commands.command_handle import CommandExitException
 from e2b_code_interpreter import Sandbox
+import os
+
+os.environ.setdefault("E2B_DOMAIN", "sae.sandbox.com")
+os.environ.setdefault("E2B_API_KEY", "admin-987654321")
+os.environ.setdefault("E2B_NAMESPACE", "sandbox")
 
 
 def execute_shell_command(s: Sandbox, command: str, expect_stdout: list[str] = None, expect_stderr: list[str] = None):

@@ -6,6 +6,12 @@ from typing import List
 import pytest
 from e2b_code_interpreter import Sandbox
 
+import os
+
+os.environ.setdefault("E2B_DOMAIN", "sae.sandbox.com")
+os.environ.setdefault("E2B_API_KEY", "admin-987654321")
+os.environ.setdefault("E2B_NAMESPACE", "sandbox")
+
 # Add sdk/customized_e2b to Python path
 project_root = Path(__file__).parent.parent.parent
 sdk_path = project_root / "sdk" / "customized_e2b"

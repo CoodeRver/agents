@@ -3,6 +3,11 @@ import os
 import pytest
 import requests
 from e2b_code_interpreter import Sandbox
+import os
+
+os.environ.setdefault("E2B_DOMAIN", "sae.sandbox.com")
+os.environ.setdefault("E2B_API_KEY", "admin-987654321")
+os.environ.setdefault("E2B_NAMESPACE", "sandbox")
 
 
 def test_read_write_file(sandbox_context):

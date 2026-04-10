@@ -8,6 +8,11 @@ from e2b.exceptions import NotFoundException
 from e2b_code_interpreter import Sandbox, SandboxQuery, SandboxState
 
 from utils import list_sandbox, connect_sandbox, run_code_sandbox
+import os
+
+os.environ.setdefault("E2B_DOMAIN", "sae.sandbox.com")
+os.environ.setdefault("E2B_API_KEY", "admin-987654321")
+os.environ.setdefault("E2B_NAMESPACE", "sandbox")
 
 
 # Link: https://e2b.dev/docs/sandbox
